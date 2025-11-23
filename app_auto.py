@@ -6,66 +6,72 @@ from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import cohere
 
-st.set_page_config(page_title="Legal Research Auto-MVP")
+st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
+
+st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
 
 # ----------------- Load Secrets -----------------
-SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]["service_account"]
-FOLDER_ID = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
-COHERE_API_KEY = st.secrets["COHERE_API_KEY"]
+SERVICE_ACCOUNT_INFO = json.loads(st.secrets["gcp_service_account"]["service_account"])
+FOLDER_ID = st.secrets["drive"]["folder_id"]
+COHERE_API_KEY = st.secrets["cohere"]["api_key"]
 
-# ----------------- Google Drive Auth -----------------
-SCOPES = ['https://www.googleapis.com/auth/drive']
-creds = service_account.Credentials.from_service_account_info(
-    json.loads(SERVICE_ACCOUNT_INFO),
-    scopes=SCOPES
-)
-drive_service = build('drive', 'v3', credentials=creds)
+# ----------------- Authenticate Google Drive -----------------
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
+drive_service = build("drive", "v3", credentials=creds)
 
-# ----------------- Cohere Client -----------------
+# ----------------- Initialize Cohere -----------------
 co = cohere.Client(COHERE_API_KEY)
 
-# ----------------- List Files -----------------
+st.write("✅ Authenticated with Google Drive and Cohere.")
+
+# ----------------- List Files in Drive Folder -----------------
 results = drive_service.files().list(
     q=f"'{FOLDER_ID}' in parents and trashed=false",
     fields="files(id, name, mimeType)"
 ).execute()
-files = results.get('files', [])
+files = results.get("files", [])
 
 if not files:
-    st.write("No files found in the Drive folder.")
+    st.warning("No files found in the Drive folder.")
 else:
-    st.write(f"Found {len(files)} files in the folder:")
-
+    st.success(f"Found {len(files)} files in the folder:")
     for file in files:
         st.write(f"- {file['name']} ({file['id']})")
 
-        # ----------------- Download File -----------------
-        request = drive_service.files().get_media(fileId=file['id'])
+        # ----------------- Download File Content -----------------
+        request = drive_service.files().get_media(fileId=file["id"])
         fh = BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
             status, done = downloader.next_chunk()
 
-        content = fh.getvalue().decode('utf-8', errors='ignore')
+        try:
+            content = fh.getvalue().decode("utf-8")
+        except:
+            content = "(Binary / non-text file, skipping preview)"
+        st.code(content[:500], language="text")
 
-        # ----------------- Generate Summary -----------------
-        prompt = f"Read the following legal document and generate a detailed, structured strategic summary:\n\n{content}\n\nSummary:"
-        response = co.summarize(text=content) if hasattr(co, 'summarize') else co.generate(model='xlarge', prompt=prompt, max_tokens=400)
-        summary_text = response if isinstance(response, str) else response.text
+        # ----------------- Generate AI Summary -----------------
+        if content.strip() != "" and "Binary / non-text" not in content:
+            prompt = f"Summarize this legal case in structured points:\n\n{content}"
+            response = co.generate(
+                model="xlarge",
+                prompt=prompt,
+                max_tokens=300
+            )
+            summary = response.generations[0].text
+            st.write("**AI Summary:**")
+            st.text(summary)
 
-        # ----------------- Upload Summary Back -----------------
-        summary_filename = f"{file['name']}_SUMMARY.txt"
-        fh_summary = BytesIO(summary_text.encode('utf-8'))
-        media = MediaFileUpload(summary_filename, mimetype='text/plain', resumable=True)
-        file_metadata = {
-            'name': summary_filename,
-            'parents': [FOLDER_ID]
-        }
-        uploaded_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
+            # ----------------- Save Summary Back to Drive -----------------
+            summary_filename = f"{file['name']}_summary.txt"
+            summary_bytes = BytesIO(summary.encode("utf-8"))
+            media = MediaFileUpload(summary_filename, mimetype="text/plain", resumable=True)
+            # Upload summary file to Drive
+            file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
+            drive_service.files().create(body=file_metadata, media_body=summary_bytes, fields="id").execute()
+            st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
 
-        st.success(f"Summary for {file['name']} uploaded as {summary_filename} (ID: {uploaded_file['id']})")
+st.info("✅ Done processing all files.")
