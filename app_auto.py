@@ -77,7 +77,7 @@ else:
                     summary = response.generations[0].text
                     st.write("**AI Summary:**")
                     st.text(summary)
-                except cohere.errors.CohereAPIError as e:
+                except Exception as e:
                     st.error(f"AI summary generation failed: {e}")
                     summary = "(Failed to generate summary)"
 
