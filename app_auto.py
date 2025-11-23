@@ -11,7 +11,7 @@ st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
 st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
 
 # ----------------- Load Secrets -----------------
-SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]["service_account"])
+SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]
 INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
 OUTPUT_FOLDER_ID = st.secrets["drive"]["output_folder_id"]
 COHERE_API_KEY = st.secrets["cohere"]["api_key"]
@@ -19,13 +19,13 @@ COHERE_API_KEY = st.secrets["cohere"]["api_key"]
 # ----------------- Authenticate Google Drive -----------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 creds = service_account.Credentials.from_service_account_info(
-    SERVICE_ACCOUNT_INFO, scopes=SCOPES
+    SERVICE_ACCOUNT_INFO,
+    scopes=SCOPES
 )
 drive_service = build("drive", "v3", credentials=creds)
 
 # ----------------- Initialize Cohere -----------------
 co = cohere.Client(COHERE_API_KEY)
-
 st.write("✅ Authenticated with Google Drive and Cohere.")
 
 # ----------------- List Files in Input Folder -----------------
@@ -44,79 +44,83 @@ files = results.get("files", [])
 
 if not files:
     st.warning("No files found in the Input folder.")
-else:
-    st.success(f"Found {len(files)} files in the Input folder:")
-    for file in files:
-        st.write(f"- {file['name']} ({file['id']})")
+    st.stop()
 
-# ----------------- Download File Content -----------------
-try:
-    if file["mimeType"] == "application/vnd.google-apps.document":
-        request = drive_service.files().export_media(
-            fileId=file["id"], mimeType="text/plain"
-        )
-    else:
-        request = drive_service.files().get_media(fileId=file["id"])
+st.success(f"Found {len(files)} files in the Input folder:")
 
-    fh = BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
+# ----------------- Process Each File -----------------
+for file in files:
 
-    while not done:
-        status, done = downloader.next_chunk()
+    st.subheader(f"📄 {file['name']}")
 
+    # ----- Download File -----
     try:
-        content = fh.getvalue().decode("utf-8")
-    except UnicodeDecodeError:
-        content = "(Binary / non-text file, skipping preview)"
+        if file["mimeType"] == "application/vnd.google-apps.document":
+            request = drive_service.files().export_media(
+                fileId=file["id"],
+                mimeType="text/plain"
+            )
+        else:
+            request = drive_service.files().get_media(fileId=file["id"])
 
-    st.code(content[:500], language="text")
+        fh = BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
 
-except HttpError as e:
-    st.error(f"Failed to download file {file['name']}: {e}")
+        while not done:
+            status, done = downloader.next_chunk()
 
-# ----------------- Generate AI Summary -----------------
-summary = "(Failed to generate summary)"
+        try:
+            content = fh.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            content = "(Binary / non-text file, skipping preview)"
 
-if content.strip() != "" and "Binary / non-text" not in content:
-    prompt = f"Summarize this legal case in structured points:\n\n{content}"
-
-    try:
-        # Cohere Chat API
-        response = co.chat(
-            model="command-xlarge-nightly",
-            message=prompt
-        )
-        summary = response.output_text
-
-        st.write("**AI Summary:**")
-        st.text(summary)
-
-    except Exception as e:
-        st.error(f"AI summary generation failed: {e}")
-
-# ----------------- Save Summary Back to Output Folder -----------------
-if summary.strip() != "":
-    summary_filename = f"{file['name']}_summary.txt"
-    summary_bytes = BytesIO(summary.encode("utf-8"))
-
-    media = MediaIoBaseUpload(summary_bytes, mimetype="text/plain", resumable=True)
-    file_metadata = {
-        "name": summary_filename,
-        "parents": [OUTPUT_FOLDER_ID]
-    }
-
-    try:
-        drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-
-        st.success(f"Summary saved as {summary_filename} in the Output folder.")
+        st.code(content[:500], language="text")
 
     except HttpError as e:
-        st.error(f"Failed to save summary for {file['name']}: {e}")
+        st.error(f"Failed to download file {file['name']}: {e}")
+        continue
+
+    # ----- Generate AI Summary -----
+    summary = "(Summary could not be generated)"
+
+    if "Binary / non-text" not in content and content.strip() != "":
+        prompt = (
+            "Summarize this legal document in clear, structured bullet points.\n\n"
+            f"{content}"
+        )
+
+        try:
+            response = co.chat(
+                model="command-xlarge-nightly",
+                message=prompt
+            )
+            summary = response.output_text
+            st.write("### 🧠 AI Summary")
+            st.text(summary)
+
+        except Exception as e:
+            st.error(f"AI summary generation failed: {e}")
+
+    # ----- Save Summary Back to Drive -----
+    if summary.strip() != "":
+        summary_filename = f"{file['name']}_summary.txt"
+        summary_bytes = BytesIO(summary.encode("utf-8"))
+
+        media = MediaIoBaseUpload(summary_bytes, mimetype="text/plain", resumable=True)
+        file_metadata = {"name": summary_filename, "parents": [OUTPUT_FOLDER_ID]}
+
+        try:
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+
+            st.success(f"💾 Summary saved as: {summary_filename}")
+
+        except HttpError as e:
+            st.error(f"Failed to save summary for {file['name']}: {e}")
 
 st.info("✅ Done processing all files.")
