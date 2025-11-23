@@ -1,180 +1,144 @@
 import streamlit as st
+import json
 from io import BytesIO
-import cohere
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
+import cohere
+from docx import Document
+from fpdf import FPDF
 import smtplib
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from email.mime.application import MIMEApplication
+from email.mime.text import MIMEText
+import datetime
 
-# =========================
-# 1. Page Config
-# =========================
-st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
-st.title("📄 Legal Research MVP: Auto-Fetch & AI PDF Summaries")
+st.set_page_config(page_title="Legal Research MVP Auto-Fetch Webhook")
+st.title("Legal Research MVP Webhook Receiver")
 
-# =========================
-# 2. Load Secrets
-# =========================
+# ----------------- Load Secrets -----------------
 SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]
 INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
 COHERE_API_KEY = st.secrets["cohere"]["api_key"]
-EMAIL_SENDER = st.secrets["email"]["sender_email"]
-EMAIL_APP_PASSWORD = st.secrets["email"]["app_password"]
-EMAIL_RECIPIENT = st.secrets["email"]["recipient_email"]
 
-# =========================
-# 3. Authenticate Google Drive
-# =========================
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# Gmail config
+SENDER_EMAIL = st.secrets["gmail"]["sender_email"]
+SENDER_PASSWORD = st.secrets["gmail"]["sender_password"]
+RECEIVER_EMAIL = st.secrets["gmail"]["receiver_email"]
 
-creds = service_account.Credentials.from_service_account_info(
-    SERVICE_ACCOUNT_INFO, scopes=SCOPES
-)
+# ----------------- Authenticate Google Drive -----------------
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
 drive_service = build("drive", "v3", credentials=creds)
 
-# =========================
-# 4. Initialize Cohere
-# =========================
+# ----------------- Initialize Cohere -----------------
 co = cohere.Client(COHERE_API_KEY)
-st.success("Connected to Google Drive & Cohere ✔️")
 
-# =========================
-# 5. List Files in Input Folder
-# =========================
-try:
-    results = drive_service.files().list(
-        q=f"'{INPUT_FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name, mimeType)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-except HttpError as e:
-    st.error(f"Error fetching file list: {e}")
-    st.stop()
+# ----------------- Helper Functions -----------------
+def extract_docx_text(fh):
+    try:
+        fh.seek(0)
+        doc = Document(fh)
+        full_text = [para.text for para in doc.paragraphs]
+        return "\n".join(full_text)
+    except Exception:
+        return "(Could not read Word file)"
 
-files = results.get("files", [])
-if not files:
-    st.warning("⚠️ No files found in the input folder.")
-    st.stop()
+def generate_pdf(file_name, summary_text):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 8, summary_text)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    pdf_bytes = BytesIO()
+    pdf.output(pdf_bytes)
+    pdf_bytes.seek(0)
+    return f"{file_name}_summary_{timestamp}.pdf", pdf_bytes
 
-st.write(f"### Found {len(files)} file(s):")
-for f in files:
-    st.write(f"• **{f['name']}** ({f['id']})")
-
-st.write("---")
-
-# =========================
-# 6. PDF Generation
-# =========================
-def create_pdf(summary_text, filename):
-    pdf_buffer = BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=letter)
-    width, height = letter
-    lines = summary_text.split('\n')
-    y = height - 50
-    for line in lines:
-        c.drawString(50, y, line)
-        y -= 15
-        if y < 50:
-            c.showPage()
-            y = height - 50
-    c.save()
-    pdf_buffer.seek(0)
-    return pdf_buffer, filename
-
-# =========================
-# 7. Email PDF
-# =========================
-def send_email_pdf(sender_email, sender_app_password, recipient_email, subject, pdf_buffer, pdf_filename):
+def send_email(sender, password, receiver, subject, body_text, pdf_bytes, pdf_filename):
     msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient_email
-    msg['Subject'] = subject
-
-    part = MIMEBase('application', 'octet-stream')
-    part.set_payload(pdf_buffer.read())
-    encoders.encode_base64(part)
-    part.add_header('Content-Disposition', f'attachment; filename={pdf_filename}')
+    msg["From"] = sender
+    msg["To"] = receiver
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_text, "plain"))
+    part = MIMEApplication(pdf_bytes.read(), Name=pdf_filename)
+    part['Content-Disposition'] = f'attachment; filename="{pdf_filename}"'
     msg.attach(part)
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.starttls()
+    server.login(sender, password)
+    server.send_message(msg)
+    server.quit()
 
+# ----------------- Webhook Receiver -----------------
+st.write("Ready to process uploaded file.")
+
+# Simulate receiving POST payload with file_id
+# In Streamlit, you can use query params for testing:
+file_id = st.text_input("Enter file ID to test")
+
+if file_id:
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(sender_email, sender_app_password)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"Error sending email: {e}")
-        return False
+        file = drive_service.files().get(fileId=file_id, fields="id, name, mimeType").execute()
+        file_name = file["name"]
+        mime_type = file["mimeType"]
 
-# =========================
-# 8. Process Each File
-# =========================
-for file in files:
-    st.subheader(f"📌 Processing: {file['name']}")
-
-    # ---------------- Download file
-    try:
-        if file["mimeType"] == "application/vnd.google-apps.document":
-            request = drive_service.files().export_media(fileId=file["id"], mimeType="text/plain")
-        else:
-            request = drive_service.files().get_media(fileId=file["id"])
-
+        # Download file
+        request = None
         fh = BytesIO()
+        if mime_type == "application/vnd.google-apps.document":
+            request = drive_service.files().export_media(fileId=file_id, mimeType="text/plain")
+        elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+            request = drive_service.files().get_media(fileId=file_id)
+        else:
+            request = drive_service.files().get_media(fileId=file_id)
+
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
 
-        try:
-            content = fh.getvalue().decode("utf-8")
-        except UnicodeDecodeError:
-            content = "(Binary / non-text file, skipping preview)"
+        # Extract content
+        if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            content = extract_docx_text(fh)
+        else:
+            try:
+                content = fh.getvalue().decode("utf-8")
+            except UnicodeDecodeError:
+                content = "(Binary / non-text file)"
 
         st.code(content[:500], language="text")
 
-    except HttpError as e:
-        st.error(f"❌ Download failed for {file['name']}: {e}")
-        continue
+        # ----------------- Generate AI Summary -----------------
+        summary = "(Failed to generate summary)"
+        if content.strip() != "" and "Binary / non-text" not in content:
+            prompt = f"Summarize this legal document in structured points:\n\n{content}"
+            try:
+                response = co.generate(model="xlarge", prompt=prompt, max_tokens=300)
+                summary = response.generations[0].text
+            except Exception as e:
+                st.error(f"AI summary generation failed: {e}")
 
-    # ---------------- AI Summary
-    summary = ""
-    if "Binary / non-text" not in content and content.strip():
-        prompt = f"Summarize this legal document clearly and concisely:\n\n{content}"
-        try:
-            response = co.chat(
-                model="command-xlarge-nightly",
-                message=prompt
-            )
-            summary = response.text
-            st.write("### 🧠 AI Summary")
-            st.text(summary)
-        except Exception as e:
-            st.error(f"❌ AI summary generation failed: {e}")
-            summary = ""
+        st.write("**AI Summary:**")
+        st.text(summary)
 
-    # ---------------- Create PDF & Email
-    if summary.strip():
-        pdf_buffer, pdf_filename = create_pdf(summary, f"{file['name']}_summary.pdf")
-        email_sent = send_email_pdf(
-            sender_email=EMAIL_SENDER,
-            sender_app_password=EMAIL_APP_PASSWORD,
-            recipient_email=EMAIL_RECIPIENT,
-            subject=f"AI PDF Summary: {file['name']}",
-            pdf_buffer=pdf_buffer,
+        # ----------------- Generate PDF -----------------
+        pdf_filename, pdf_bytes = generate_pdf(file_name, summary)
+
+        # ----------------- Send Email -----------------
+        send_email(
+            sender=SENDER_EMAIL,
+            password=SENDER_PASSWORD,
+            receiver=RECEIVER_EMAIL,
+            subject=f"AI Summary for {file_name}",
+            body_text="Attached is the AI-generated summary PDF.",
+            pdf_bytes=pdf_bytes,
             pdf_filename=pdf_filename
         )
+        st.success(f"PDF summary sent to {RECEIVER_EMAIL}: {pdf_filename}")
 
-        if email_sent:
-            st.success(f"✔️ PDF summary emailed for {file['name']}")
-        else:
-            st.error(f"❌ Failed to send PDF email for {file['name']}")
-
-st.info("🎉 All files processed.")
+    except HttpError as e:
+        st.error(f"Google Drive error: {e}")
+    except Exception as e:
+        st.error(f"Error: {e}")
