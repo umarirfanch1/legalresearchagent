@@ -3,10 +3,9 @@ import json
 from io import BytesIO
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 import cohere
-import tempfile
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
 st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
@@ -30,7 +29,9 @@ st.write("✅ Authenticated with Google Drive and Cohere.")
 try:
     results = drive_service.files().list(
         q=f"'{FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name, mimeType)"
+        fields="files(id, name, mimeType)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
 except HttpError as e:
     st.error(f"Failed to list files in the Drive folder: {e}")
@@ -66,35 +67,35 @@ else:
 
             st.code(content[:500], language="text")
 
-            # ----------------- Generate AI Summary with Chat API -----------------
+            # ----------------- Generate AI Summary -----------------
+            summary = "(Failed to generate summary)"
             if content.strip() != "" and "Binary / non-text" not in content:
                 prompt = f"Summarize this legal case in structured points:\n\n{content}"
                 try:
+                    # Cohere Chat API
                     response = co.chat(
-    model="xlarge",   # stable Cohere chat model
-    message=prompt
-)
-summary = response.output_text
-                    summary = response.output[0].content
+                        model="xlarge",
+                        message=prompt
+                    )
+                    summary = response.output_text
                     st.write("**AI Summary:**")
                     st.text(summary)
                 except Exception as e:
                     st.error(f"AI summary generation failed: {e}")
-                    summary = "(Failed to generate summary)"
 
-                # ----------------- Save Summary Back to Drive -----------------
+            # ----------------- Save Summary Back to Drive -----------------
+            if summary.strip() != "":
                 summary_filename = f"{file['name']}_summary.txt"
+                summary_bytes = BytesIO(summary.encode("utf-8"))
+                media = MediaIoBaseUpload(summary_bytes, mimetype="text/plain", resumable=True)
                 file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
                 try:
-                    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as tmp_file:
-                        tmp_file.write(summary)
-                        tmp_file.flush()
-                        media = MediaFileUpload(tmp_file.name, mimetype="text/plain", resumable=True)
-                        drive_service.files().create(
-                            body=file_metadata,
-                            media_body=media,
-                            fields="id"
-                        ).execute()
+                    drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields="id",
+                        supportsAllDrives=True
+                    ).execute()
                     st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
                 except HttpError as e:
                     st.error(f"Failed to save summary for {file['name']}: {e}")
