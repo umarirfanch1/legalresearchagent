@@ -11,7 +11,7 @@ st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
 st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
 
 # ----------------- Load Secrets -----------------
-SERVICE_ACCOUNT_INFO = json.loads(st.secrets["gcp_service_account"]["service_account"])
+SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]["service_account"])
 INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
 OUTPUT_FOLDER_ID = st.secrets["drive"]["output_folder_id"]
 COHERE_API_KEY = st.secrets["cohere"]["api_key"]
