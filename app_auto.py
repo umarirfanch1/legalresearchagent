@@ -12,7 +12,8 @@ st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
 
 # ----------------- Load Secrets -----------------
 SERVICE_ACCOUNT_INFO = json.loads(st.secrets["gcp_service_account"]["service_account"])
-FOLDER_ID = st.secrets["drive"]["folder_id"]
+INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
+OUTPUT_FOLDER_ID = st.secrets["drive"]["output_folder_id"]
 COHERE_API_KEY = st.secrets["cohere"]["api_key"]
 
 # ----------------- Authenticate Google Drive -----------------
@@ -25,10 +26,10 @@ co = cohere.Client(COHERE_API_KEY)
 
 st.write("✅ Authenticated with Google Drive and Cohere.")
 
-# ----------------- List Files in Drive Folder -----------------
+# ----------------- List Files in Input Folder -----------------
 try:
     results = drive_service.files().list(
-        q=f"'{FOLDER_ID}' in parents and trashed=false",
+        q=f"'{INPUT_FOLDER_ID}' in parents and trashed=false",
         fields="files(id, name, mimeType)",
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
@@ -40,9 +41,9 @@ except HttpError as e:
 files = results.get("files", [])
 
 if not files:
-    st.warning("No files found in the Drive folder.")
+    st.warning("No files found in the Input folder.")
 else:
-    st.success(f"Found {len(files)} files in the folder:")
+    st.success(f"Found {len(files)} files in the Input folder:")
 
     for file in files:
         st.write(f"- {file['name']} ({file['id']})")
@@ -77,18 +78,18 @@ else:
                         model="command-xlarge-nightly",
                         message=prompt
                     )
-                    summary = response.output_text
+                    summary = response.message
                     st.write("**AI Summary:**")
                     st.text(summary)
                 except Exception as e:
                     st.error(f"AI summary generation failed: {e}")
 
-            # ----------------- Save Summary Back to Drive -----------------
+            # ----------------- Save Summary Back to Output Folder -----------------
             if summary.strip() != "":
                 summary_filename = f"{file['name']}_summary.txt"
                 summary_bytes = BytesIO(summary.encode("utf-8"))
                 media = MediaIoBaseUpload(summary_bytes, mimetype="text/plain", resumable=True)
-                file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
+                file_metadata = {"name": summary_filename, "parents": [OUTPUT_FOLDER_ID]}
                 try:
                     drive_service.files().create(
                         body=file_metadata,
@@ -96,7 +97,7 @@ else:
                         fields="id",
                         supportsAllDrives=True
                     ).execute()
-                    st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
+                    st.success(f"Summary saved as {summary_filename} in the Output folder.")
                 except HttpError as e:
                     st.error(f"Failed to save summary for {file['name']}: {e}")
 
