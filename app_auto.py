@@ -6,44 +6,46 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-import pickle
 import os
+import pickle
 import cohere
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
-st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary (OAuth)")
+st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
 
-# ----------------- Load Config -----------------
-with open("config.json") as f:
-    config = json.load(f)
+# ----------------- Load Secrets -----------------
+INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
+OUTPUT_FOLDER_ID = st.secrets["drive"]["output_folder_id"]
+COHERE_API_KEY = st.secrets["cohere"]["api_key"]
+client_secret_info = json.loads(st.secrets["google_oauth"]["client_secret_json"])
 
-INPUT_FOLDER_ID = config["GOOGLE_DRIVE_INPUT_FOLDER_ID"]
-OUTPUT_FOLDER_ID = config["GOOGLE_DRIVE_OUTPUT_FOLDER_ID"]
-COHERE_API_KEY = config["COHERE_API_KEY"]
-
-# ----------------- Authenticate Google Drive with OAuth -----------------
+# ----------------- Authenticate Google Drive via OAuth -----------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+
 creds = None
+token_pickle = "token.pickle"
 
-if os.path.exists("token.pickle"):
-    with open("token.pickle", "rb") as token:
-        creds = pickle.load(token)
+# Check if token.pickle exists in current folder
+if os.path.exists(token_pickle):
+    with open(token_pickle, "rb") as token_file:
+        creds = pickle.load(token_file)
 
+# If no valid credentials, start OAuth flow
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     else:
-        flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+        flow = InstalledAppFlow.from_client_config(client_secret_info, SCOPES)
         creds = flow.run_local_server(port=0)
-    with open("token.pickle", "wb") as token:
-        pickle.dump(creds, token)
+    # Save credentials for next run
+    with open(token_pickle, "wb") as token_file:
+        pickle.dump(creds, token_file)
 
 drive_service = build("drive", "v3", credentials=creds)
-st.write("✅ Authenticated with Google Drive via OAuth.")
+st.write("✅ Authenticated with Google Drive using OAuth and Cohere.")
 
 # ----------------- Initialize Cohere -----------------
 co = cohere.Client(COHERE_API_KEY)
-st.write("✅ Authenticated with Cohere.")
 
 # ----------------- List Files in Input Folder -----------------
 try:
@@ -54,7 +56,7 @@ try:
         includeItemsFromAllDrives=True
     ).execute()
 except HttpError as e:
-    st.error(f"Failed to list files in the Drive folder: {e}")
+    st.error(f"Failed to list files in the Input folder: {e}")
     st.stop()
 
 files = results.get("files", [])
@@ -96,7 +98,7 @@ else:
                         model="command-xlarge-nightly",
                         message=prompt
                     )
-                    summary = response.output_text
+                    summary = getattr(response, "output_text", "(Failed to generate summary)")
                     st.write("**AI Summary:**")
                     st.text(summary)
                 except Exception as e:
