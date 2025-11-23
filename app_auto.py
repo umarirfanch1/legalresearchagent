@@ -6,6 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from googleapiclient.errors import HttpError
 import cohere
+import tempfile
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
 st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
@@ -65,16 +66,15 @@ else:
 
             st.code(content[:500], language="text")
 
-            # ----------------- Generate AI Summary -----------------
+            # ----------------- Generate AI Summary with Chat API -----------------
             if content.strip() != "" and "Binary / non-text" not in content:
                 prompt = f"Summarize this legal case in structured points:\n\n{content}"
                 try:
-                    response = co.generate(
-                        model="command-xlarge-nightly",  # Valid Cohere model
-                        prompt=prompt,
-                        max_tokens=300
+                    response = co.chat(
+                        model="xlarge",
+                        messages=[{"role": "user", "content": prompt}]
                     )
-                    summary = response.generations[0].text
+                    summary = response.output[0].content
                     st.write("**AI Summary:**")
                     st.text(summary)
                 except Exception as e:
@@ -83,14 +83,17 @@ else:
 
                 # ----------------- Save Summary Back to Drive -----------------
                 summary_filename = f"{file['name']}_summary.txt"
-                summary_bytes = BytesIO(summary.encode("utf-8"))
                 file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
                 try:
-                    drive_service.files().create(
-                        body=file_metadata,
-                        media_body=MediaFileUpload(summary_filename, mimetype="text/plain", resumable=True),
-                        fields="id"
-                    ).execute()
+                    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as tmp_file:
+                        tmp_file.write(summary)
+                        tmp_file.flush()
+                        media = MediaFileUpload(tmp_file.name, mimetype="text/plain", resumable=True)
+                        drive_service.files().create(
+                            body=file_metadata,
+                            media_body=media,
+                            fields="id"
+                        ).execute()
                     st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
                 except HttpError as e:
                     st.error(f"Failed to save summary for {file['name']}: {e}")
