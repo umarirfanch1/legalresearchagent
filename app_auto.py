@@ -1,68 +1,81 @@
-import streamlit as st
+import json
 from io import BytesIO
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import streamlit as st
+import cohere
 
-st.title("Google Drive MVP Auto-Fetch")
+# ------------------------
+# --- Load secrets -------
+# ------------------------
+SERVICE_ACCOUNT_INFO = st.secrets["gcp_service_account"]["service_account"]
+FOLDER_ID = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
+COHERE_API_KEY = st.secrets["COHERE_API_KEY"]
 
-# --- Load secrets from Streamlit ---
-try:
-    service_info = st.secrets["gcp_service_account"]   # JSON key stored inside Streamlit
-    folder_id = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
-except KeyError as e:
-    st.error(f"Missing Streamlit secret: {e}")
-    st.stop()
-
-# --- Authenticate Google Service Account ---
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# ------------------------
+# --- Initialize clients -
+# ------------------------
+SCOPES = ['https://www.googleapis.com/auth/drive']
 creds = service_account.Credentials.from_service_account_info(
-    service_info, scopes=SCOPES
+    json.loads(SERVICE_ACCOUNT_INFO), scopes=SCOPES
 )
+drive_service = build('drive', 'v3', credentials=creds)
 
-drive_service = build("drive", "v3", credentials=creds)
+co = cohere.Client(COHERE_API_KEY)
 
-st.write("✅ Google Drive authenticated successfully")
-
-# --- List files inside the Drive folder ---
-try:
-    results = drive_service.files().list(
-        q=f"'{folder_id}' in parents and trashed=false"
-    ).execute()
-    files = results.get("files", [])
-except Exception as e:
-    st.error(f"Error listing files: {e}")
-    st.stop()
+# ------------------------
+# --- List files in Drive -
+# ------------------------
+results = drive_service.files().list(
+    q=f"'{FOLDER_ID}' in parents and trashed=false"
+).execute()
+files = results.get('files', [])
 
 if not files:
-    st.warning("No files found in this Drive folder.")
+    st.write("No files found in the Drive folder.")
 else:
-    st.success(f"Found **{len(files)}** files:")
+    st.write(f"Found {len(files)} files in the folder:")
 
-    for file in files:
-        file_id = file["id"]
-        file_name = file["name"]
+# ------------------------
+# --- Process each file ---
+# ------------------------
+for file in files:
+    st.write(f"- {file['name']} (ID: {file['id']})")
 
-        st.write(f"### 📄 {file_name}")
-        st.caption(f"File ID: `{file_id}`")
+    # --- Download file ---
+    request = drive_service.files().get_media(fileId=file['id'])
+    fh = BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+    content = fh.getvalue().decode('utf-8')
 
-        # --- Download the file content ---
-        try:
-            request = drive_service.files().get_media(fileId=file_id)
-            fh = BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
+    # --- Generate summary using Cohere ---
+    st.write("Generating summary...")
+    response = co.summarize(
+        text=content,
+        length="medium",   # short / medium / long
+        format="paragraph",
+        extractiveness="medium"
+    )
+    summary = response.summary
+    st.write("Summary generated:\n", summary[:500], "...")  # Preview first 500 chars
 
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
+    # --- Save summary back to Drive ---
+    summary_filename = file['name'].replace(".txt", "_summary.txt")
+    summary_bytes = summary.encode('utf-8')
+    media = MediaFileUpload(filename=None, mimetype='text/plain', resumable=True)
+    media._fd = BytesIO(summary_bytes)  # Hack to upload in-memory bytes
 
-            content = fh.getvalue().decode("utf-8")
+    file_metadata = {
+        'name': summary_filename,
+        'parents': [FOLDER_ID]
+    }
 
-            st.text_area(
-                f"Preview: {file_name}",
-                content[:1000],
-                height=200
-            )
-
-        except Exception as e:
-            st.error(f"Error downloading {file_name}: {e}")
+    uploaded_file = drive_service.files().create(
+        body=file_metadata,
+        media_body=media
+    ).execute()
+    st.write(f"Summary saved as: {summary_filename}")
