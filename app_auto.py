@@ -3,7 +3,7 @@ import json
 from io import BytesIO
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import cohere
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
@@ -55,23 +55,22 @@ else:
 
         # ----------------- Generate AI Summary -----------------
         if content.strip() != "" and "Binary / non-text" not in content:
-            prompt = f"Summarize this legal case in structured points:\n\n{content}"
+            prompt = f"Summarize this legal case into structured points for legal research:\n\n{content}"
             response = co.generate(
                 model="xlarge",
                 prompt=prompt,
                 max_tokens=300
             )
-            summary = response.generations[0].text
+            summary = response.generations[0].text.strip()
             st.write("**AI Summary:**")
             st.text(summary)
 
             # ----------------- Save Summary Back to Drive -----------------
             summary_filename = f"{file['name']}_summary.txt"
             summary_bytes = BytesIO(summary.encode("utf-8"))
-            media = MediaFileUpload(summary_filename, mimetype="text/plain", resumable=True)
-            # Upload summary file to Drive
+            media = MediaIoBaseUpload(summary_bytes, mimetype="text/plain")
             file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
-            drive_service.files().create(body=file_metadata, media_body=summary_bytes, fields="id").execute()
+            drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
             st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
 
 st.info("✅ Done processing all files.")
