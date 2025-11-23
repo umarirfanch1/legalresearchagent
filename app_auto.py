@@ -2,29 +2,48 @@ import streamlit as st
 import json
 from io import BytesIO
 from googleapiclient.discovery import build
-from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
+import os
 import cohere
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch")
-st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary")
+st.title("Legal Research MVP: Google Drive Auto-Fetch & Summary (OAuth)")
 
-# ----------------- Load Secrets -----------------
-SERVICE_ACCOUNT_INFO = json.loads(st.secrets["gcp_service_account"]["service_account"])
-INPUT_FOLDER_ID = st.secrets["drive"]["input_folder_id"]
-OUTPUT_FOLDER_ID = st.secrets["drive"]["output_folder_id"]
-COHERE_API_KEY = st.secrets["cohere"]["api_key"]
+# ----------------- Load Config -----------------
+with open("config.json") as f:
+    config = json.load(f)
 
-# ----------------- Authenticate Google Drive -----------------
+INPUT_FOLDER_ID = config["GOOGLE_DRIVE_INPUT_FOLDER_ID"]
+OUTPUT_FOLDER_ID = config["GOOGLE_DRIVE_OUTPUT_FOLDER_ID"]
+COHERE_API_KEY = config["COHERE_API_KEY"]
+
+# ----------------- Authenticate Google Drive with OAuth -----------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
+creds = None
+
+if os.path.exists("token.pickle"):
+    with open("token.pickle", "rb") as token:
+        creds = pickle.load(token)
+
+if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+        creds = flow.run_local_server(port=0)
+    with open("token.pickle", "wb") as token:
+        pickle.dump(creds, token)
+
 drive_service = build("drive", "v3", credentials=creds)
+st.write("✅ Authenticated with Google Drive via OAuth.")
 
 # ----------------- Initialize Cohere -----------------
 co = cohere.Client(COHERE_API_KEY)
-
-st.write("✅ Authenticated with Google Drive and Cohere.")
+st.write("✅ Authenticated with Cohere.")
 
 # ----------------- List Files in Input Folder -----------------
 try:
@@ -73,7 +92,6 @@ else:
             if content.strip() != "" and "Binary / non-text" not in content:
                 prompt = f"Summarize this legal case in structured points:\n\n{content}"
                 try:
-                    # Cohere Chat API
                     response = co.chat(
                         model="command-xlarge-nightly",
                         message=prompt
