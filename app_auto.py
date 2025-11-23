@@ -74,7 +74,7 @@ else:
                 try:
                     # Cohere Chat API
                     response = co.chat(
-                        model="xlarge",
+                        model="command-xlarge-nightly",
                         message=prompt
                     )
                     summary = response.output_text
