@@ -1,38 +1,68 @@
-import json
+import streamlit as st
 from io import BytesIO
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload
 
-# Load config
-with open("config.json") as f:
-    config = json.load(f)
+st.title("Google Drive MVP Auto-Fetch")
 
-SERVICE_ACCOUNT_FILE = config["GOOGLE_SERVICE_ACCOUNT_JSON"]
-FOLDER_ID = config["GOOGLE_DRIVE_FOLDER_ID"]
+# --- Load secrets from Streamlit ---
+try:
+    service_info = st.secrets["gcp_service_account"]   # JSON key stored inside Streamlit
+    folder_id = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
+except KeyError as e:
+    st.error(f"Missing Streamlit secret: {e}")
+    st.stop()
 
-# Authenticate Google Drive
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-drive_service = build('drive', 'v3', credentials=creds)
+# --- Authenticate Google Service Account ---
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+creds = service_account.Credentials.from_service_account_info(
+    service_info, scopes=SCOPES
+)
 
-# List files in folder
-results = drive_service.files().list(q=f"'{FOLDER_ID}' in parents and trashed=false").execute()
-files = results.get('files', [])
+drive_service = build("drive", "v3", credentials=creds)
+
+st.write("✅ Google Drive authenticated successfully")
+
+# --- List files inside the Drive folder ---
+try:
+    results = drive_service.files().list(
+        q=f"'{folder_id}' in parents and trashed=false"
+    ).execute()
+    files = results.get("files", [])
+except Exception as e:
+    st.error(f"Error listing files: {e}")
+    st.stop()
 
 if not files:
-    print("No files found in the Drive folder.")
+    st.warning("No files found in this Drive folder.")
 else:
-    print(f"Found {len(files)} files in the folder:")
-    for file in files:
-        print(f"- {file['name']} (ID: {file['id']})")
+    st.success(f"Found **{len(files)}** files:")
 
-        # Download content to verify
-        request = drive_service.files().get_media(fileId=file['id'])
-        fh = BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        content = fh.getvalue().decode('utf-8')
-        print(f"Preview (first 500 chars):\n{content[:500]}\n{'-'*50}")
+    for file in files:
+        file_id = file["id"]
+        file_name = file["name"]
+
+        st.write(f"### 📄 {file_name}")
+        st.caption(f"File ID: `{file_id}`")
+
+        # --- Download the file content ---
+        try:
+            request = drive_service.files().get_media(fileId=file_id)
+            fh = BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+
+            content = fh.getvalue().decode("utf-8")
+
+            st.text_area(
+                f"Preview: {file_name}",
+                content[:1000],
+                height=200
+            )
+
+        except Exception as e:
+            st.error(f"Error downloading {file_name}: {e}")
