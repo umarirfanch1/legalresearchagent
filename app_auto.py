@@ -13,6 +13,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 import datetime
+import urllib.parse
 
 st.set_page_config(page_title="Legal Research MVP Auto-Fetch Webhook")
 st.title("Legal Research MVP Webhook Receiver")
@@ -74,9 +75,14 @@ def send_email(sender, password, receiver, subject, body_text, pdf_bytes, pdf_fi
 # ----------------- Webhook Receiver -----------------
 st.write("Ready to process uploaded file.")
 
-# Simulate receiving POST payload with file_id
-# In Streamlit, you can use query params for testing:
-file_id = st.text_input("Enter file ID to test")
+# Get file_id from query params for webhook
+params = st.experimental_get_query_params()
+file_id = params.get("file_id", [None])[0]
+
+# For testing, also allow manual input
+file_id_input = st.text_input("Enter file ID to test manually")
+if file_id_input:
+    file_id = file_id_input
 
 if file_id:
     try:
@@ -85,12 +91,9 @@ if file_id:
         mime_type = file["mimeType"]
 
         # Download file
-        request = None
         fh = BytesIO()
         if mime_type == "application/vnd.google-apps.document":
             request = drive_service.files().export_media(fileId=file_id, mimeType="text/plain")
-        elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
-            request = drive_service.files().get_media(fileId=file_id)
         else:
             request = drive_service.files().get_media(fileId=file_id)
 
@@ -142,3 +145,5 @@ if file_id:
         st.error(f"Google Drive error: {e}")
     except Exception as e:
         st.error(f"Error: {e}")
+else:
+    st.info("No file ID received yet.")
