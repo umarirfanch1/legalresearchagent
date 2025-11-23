@@ -78,7 +78,7 @@ else:
                         model="command-xlarge-nightly",
                         message=prompt
                     )
-                    summary = response.message
+                    summary = response.output_text
                     st.write("**AI Summary:**")
                     st.text(summary)
                 except Exception as e:
