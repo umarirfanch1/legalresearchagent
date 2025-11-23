@@ -71,9 +71,10 @@ else:
                 prompt = f"Summarize this legal case in structured points:\n\n{content}"
                 try:
                     response = co.chat(
-                        model="xlarge",
-                        messages=[{"role": "user", "content": prompt}]
-                    )
+    model="xlarge",   # stable Cohere chat model
+    message=prompt
+)
+summary = response.output_text
                     summary = response.output[0].content
                     st.write("**AI Summary:**")
                     st.text(summary)
