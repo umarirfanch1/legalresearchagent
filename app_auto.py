@@ -51,7 +51,7 @@ else:
                 request = drive_service.files().export_media(fileId=file["id"], mimeType="text/plain")
             else:
                 request = drive_service.files().get_media(fileId=file["id"])
-            
+
             fh = BytesIO()
             downloader = MediaIoBaseDownload(fh, request)
             done = False
@@ -68,24 +68,27 @@ else:
             # ----------------- Generate AI Summary -----------------
             if content.strip() != "" and "Binary / non-text" not in content:
                 prompt = f"Summarize this legal case in structured points:\n\n{content}"
-                response = co.generate(
-                    model="xlarge",
-                    prompt=prompt,
-                    max_tokens=300
-                )
-                summary = response.generations[0].text
-                st.write("**AI Summary:**")
-                st.text(summary)
+                try:
+                    response = co.generate(
+                        model="command-xlarge-nightly",  # Valid Cohere model
+                        prompt=prompt,
+                        max_tokens=300
+                    )
+                    summary = response.generations[0].text
+                    st.write("**AI Summary:**")
+                    st.text(summary)
+                except cohere.errors.CohereAPIError as e:
+                    st.error(f"AI summary generation failed: {e}")
+                    summary = "(Failed to generate summary)"
 
                 # ----------------- Save Summary Back to Drive -----------------
                 summary_filename = f"{file['name']}_summary.txt"
                 summary_bytes = BytesIO(summary.encode("utf-8"))
-                media = MediaFileUpload(summary_filename, mimetype="text/plain", resumable=True)
                 file_metadata = {"name": summary_filename, "parents": [FOLDER_ID]}
                 try:
                     drive_service.files().create(
                         body=file_metadata,
-                        media_body=summary_bytes,
+                        media_body=MediaFileUpload(summary_filename, mimetype="text/plain", resumable=True),
                         fields="id"
                     ).execute()
                     st.success(f"Summary saved as {summary_filename} in the same Drive folder.")
